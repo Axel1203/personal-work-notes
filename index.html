@@ -19,7 +19,7 @@
 <body>
     <div id="root"></div>
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useMemo } = React;
 
         const STORAGE_KEY = 'FOCUSTRACK_DATA_V2';
         const CATEGORIES = ['行政', '研發', '教學', '業務', '會議', '行銷', '企劃', '活動', '財務', '進修'];
@@ -28,6 +28,15 @@
 
         const FocusTrackApp = () => {
             const [tasks, setTasks] = useState([]);
+            
+            // 視圖切換狀態 (看板 vs 行事曆)
+            const [viewMode, setViewMode] = useState('kanban');
+            const [calendarDate, setCalendarDate] = useState(new Date());
+
+            // 搜尋與篩選狀態
+            const [searchQuery, setSearchQuery] = useState('');
+            const [filterCategory, setFilterCategory] = useState('所有分類');
+
             const [isModalOpen, setIsModalOpen] = useState(false);
             const [editingTask, setEditingTask] = useState(null);
             const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -59,6 +68,16 @@
                 }
             }, [tasks]);
 
+            // 過濾後的任務清單
+            const filteredTasks = useMemo(() => {
+                return tasks.filter(task => {
+                    const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                                          (task.notes && task.notes.toLowerCase().includes(searchQuery.toLowerCase()));
+                    const matchesCategory = filterCategory === '所有分類' || task.category === filterCategory;
+                    return matchesSearch && matchesCategory;
+                });
+            }, [tasks, searchQuery, filterCategory]);
+
             const standardizeDate = (dateInput) => {
                 if (!dateInput) return '';
                 let d = typeof dateInput === 'number' ? new Date(Math.round((dateInput - 25569) * 86400 * 1000)) : new Date(dateInput);
@@ -67,16 +86,21 @@
 
             const checkOverdue = (deadline) => {
                 if (!deadline) return null;
+                const dlDate = new Date(deadline);
+                if (isNaN(dlDate.getTime())) return null;
+                dlDate.setHours(0, 0, 0, 0);
                 const today = new Date(); today.setHours(0, 0, 0, 0);
-                const dlDate = new Date(deadline); dlDate.setHours(0, 0, 0, 0);
                 const diffDays = Math.ceil((dlDate - today) / 86400000);
-                if (diffDays < 0) return { text: '已逾期', color: 'bg-red-100 text-red-700' };
-                if (diffDays === 0) return { text: '今天到期', color: 'bg-orange-100 text-orange-700' };
-                if (diffDays === 1) return { text: '明天到期', color: 'bg-yellow-100 text-yellow-700' };
-                return null;
+                if (diffDays < 0) return { text: '已逾期', color: 'bg-red-100 text-red-700', light: '🔴' };
+                if (diffDays === 0) return { text: '今天到期', color: 'bg-red-100 text-red-700', light: '🔴' };
+                if (diffDays === 1) return { text: '明天到期', color: 'bg-yellow-100 text-yellow-700', light: '🟡' };
+                return { text: null, color: null, light: '🟢' };
             };
 
-            // 取得包含時間的格式化字串 (YYYYMMDD_HHMMSS)
+            // 行事曆輔助函數
+            const nextMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1));
+            const prevMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1));
+
             const getTimestampStr = () => {
                 const d = new Date();
                 const pad = (n) => String(n).padStart(2, '0');
@@ -131,7 +155,6 @@
                 const workbook = new ExcelJS.Workbook();
                 const worksheet = workbook.addWorksheet('工作清單');
 
-                // 設定欄位標頭與寬度
                 worksheet.columns = [
                     { header: '工作標題', key: 'title', width: 30 },
                     { header: '截止日期', key: 'deadline', width: 15 },
@@ -141,7 +164,6 @@
                     { header: '備註', key: 'notes', width: 40 }
                 ];
 
-                // 寫入當前工作資料
                 tasks.forEach(t => {
                     worksheet.addRow({
                         title: t.title, deadline: t.deadline, category: t.category, 
@@ -149,7 +171,6 @@
                     });
                 });
 
-                // 設定資料驗證 (下拉選單)，預留前 500 行，讓您在 Excel 內新增工作時也能選
                 const catStr = `"${CATEGORIES.join(',')}"`;
                 const prioStr = `"${PRIORITIES.join(',')}"`;
                 const statStr = `"${STATUSES.join(',')}"`;
@@ -160,7 +181,6 @@
                     worksheet.getCell(`E${i}`).dataValidation = { type: 'list', allowBlank: true, formulae: [statStr] };
                 }
 
-                // 產生並下載檔案
                 const buffer = await workbook.xlsx.writeBuffer();
                 const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
                 const link = document.createElement('a');
@@ -200,57 +220,179 @@
 
             return (
                 <div className="min-h-screen p-4 max-w-7xl mx-auto">
-                    <div className="flex flex-col md:flex-row justify-between items-center mb-6 bg-white p-4 rounded-xl shadow-sm gap-4">
-                        <h1 className="text-2xl font-bold text-gray-800">個人工作備忘錄</h1>
-                        <div className="flex flex-wrap gap-2">
-                            <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">
-                                📂 匯入 Excel <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleImportExcel} />
-                            </label>
-                            <button onClick={handleExportExcel} className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">📊 匯出 Excel</button>
-                            <button onClick={handleExportCSV} className="bg-purple-100 hover:bg-purple-200 text-purple-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors">🗓️ 匯出 CSV 給 Google 行事曆用</button>
-                            <button onClick={() => setIsModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors">＋ 新增工作</button>
+                    {/* Header 區塊 */}
+                    <div className="mb-6 bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                        <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
+                            
+                            {/* 標題與副標題 */}
+                            <div>
+                                <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
+                                    <span className="text-4xl">🎯</span> 個人工作備忘錄
+                                </h1>
+                                <p className="text-sm text-gray-500 mt-2 font-medium">
+                                    自動儲存防護中 | 資料安全存放於本機
+                                </p>
+                            </div>
+
+                            {/* 動作按鈕區 */}
+                            <div className="flex flex-wrap gap-2 w-full lg:w-auto">
+                                <button onClick={() => setViewMode(viewMode === 'kanban' ? 'calendar' : 'kanban')} className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-4 py-2.5 rounded-lg text-sm font-bold transition-colors flex-1 lg:flex-none">
+                                    {viewMode === 'kanban' ? '📅 切換行事曆' : '📋 切換看板'}
+                                </button>
+                                <label className="cursor-pointer bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex-1 text-center lg:flex-none">
+                                    📂 匯入 Excel <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleImportExcel} />
+                                </label>
+                                <button onClick={handleExportExcel} className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex-1 lg:flex-none">📊 匯出 Excel</button>
+                                <button onClick={handleExportCSV} className="bg-purple-50 hover:bg-purple-100 text-purple-700 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex-1 lg:flex-none">🗓️ 匯出 CSV 給 Google 行事曆用</button>
+                                <button onClick={() => setIsModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg text-sm font-medium shadow-sm transition-colors flex-1 lg:flex-none">＋ 新增工作</button>
+                            </div>
+                        </div>
+
+                        {/* 搜尋與篩選列 (對應圖片功能) */}
+                        <div className="mt-6 pt-5 border-t border-gray-100 flex flex-col sm:flex-row gap-3">
+                            <div className="relative flex-1 max-w-md">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-lg">🔍</span>
+                                <input 
+                                    type="text" 
+                                    placeholder="搜尋工作..." 
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm"
+                                />
+                            </div>
+                            <select 
+                                value={filterCategory}
+                                onChange={(e) => setFilterCategory(e.target.value)}
+                                className="px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-sm font-medium text-gray-700 min-w-[140px] cursor-pointer"
+                            >
+                                <option value="所有分類">所有分類</option>
+                                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
                         </div>
                     </div>
 
-                    <div className="flex gap-6 overflow-x-auto pb-4 hide-scrollbar">
-                        {STATUSES.map(status => (
-                            <div key={status} className="flex-1 min-w-[320px] bg-gray-50 rounded-xl p-4 border border-gray-200" onDragOver={e => e.preventDefault()} onDrop={e => handleDrop(e, status)}>
-                                <div className="flex justify-between items-center mb-4 px-2">
-                                    <h3 className="font-semibold text-gray-700 text-lg">{status}</h3>
-                                    <span className="bg-white text-gray-500 text-xs font-bold px-3 py-1 rounded-full shadow-sm">{tasks.filter(t => t.status === status).length}</span>
-                                </div>
-                                <div className="space-y-3">
-                                    {tasks.filter(t => t.status === status).sort((a, b) => new Date(a.deadline || '9999-12-31') - new Date(b.deadline || '9999-12-31')).map(task => {
-                                        const overdueInfo = checkOverdue(task.deadline);
-                                        return (
-                                            <div key={task.id} draggable onDragStart={e => handleDragStart(e, task.id)} className="bg-white p-4 rounded-xl shadow-sm hover:shadow-md transition-all cursor-move border border-gray-100 group">
-                                                <div className="flex justify-between items-start mb-2">
-                                                    <span className={`text-xs font-bold px-2 py-1 rounded ${getPriorityColor(task.priority)}`}>{task.priority}</span>
-                                                    <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">{task.category}</span>
+                    {/* 看板區域 */}
+                    {viewMode === 'kanban' && (
+                        <div className="flex gap-6 overflow-x-auto pb-4 hide-scrollbar">
+                            {STATUSES.map(status => {
+                                // 使用過濾後的資料來計算該欄位的工作
+                                const columnTasks = filteredTasks.filter(t => t.status === status);
+                                return (
+                                    <div key={status} className="flex-1 min-w-[320px] bg-gray-50 rounded-xl p-4 border border-gray-200" onDragOver={e => e.preventDefault()} onDrop={e => handleDrop(e, status)}>
+                                        <div className="flex justify-between items-center mb-4 px-2">
+                                            <h3 className="font-semibold text-gray-700 text-lg">{status}</h3>
+                                            <span className="bg-white text-gray-500 text-xs font-bold px-3 py-1 rounded-full shadow-sm">{columnTasks.length}</span>
+                                        </div>
+                                        <div className="space-y-3">
+                                            {columnTasks.sort((a, b) => new Date(a.deadline || '9999-12-31') - new Date(b.deadline || '9999-12-31')).map(task => {
+                                                const overdueInfo = checkOverdue(task.deadline);
+                                                return (
+                                                    <div key={task.id} draggable onDragStart={e => handleDragStart(e, task.id)} className="bg-white p-4 rounded-xl shadow-sm hover:shadow-md transition-all cursor-move border border-gray-100 group">
+                                                        <div className="flex justify-between items-start mb-2">
+                                                            <span className={`text-xs font-bold px-2 py-1 rounded ${getPriorityColor(task.priority)}`}>{task.priority}</span>
+                                                            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">{task.category}</span>
+                                                        </div>
+                                                        <h4 className="font-bold text-gray-800 mb-2 leading-tight">
+                                                            {status !== '已完成' && overdueInfo && <span className="mr-1">{overdueInfo.light}</span>}
+                                                            {task.title}
+                                                        </h4>
+                                                        {task.deadline && (
+                                                            <div className="flex items-center text-sm text-gray-500 mb-3 gap-2">
+                                                                <span>📅 {standardizeDate(task.deadline)}</span>
+                                                                {status !== '已完成' && overdueInfo && overdueInfo.text && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${overdueInfo.color}`}>{overdueInfo.text}</span>}
+                                                            </div>
+                                                        )}
+                                                        {task.notes && <div className="text-sm text-gray-600 bg-gray-50 p-2 rounded mb-3 line-clamp-2">{task.notes}</div>}
+                                                        <div className="flex justify-between items-center pt-2 mt-2 border-t border-gray-50">
+                                                            <button onClick={() => handleGoogleCalendarSync(task)} className="text-xs text-blue-600 hover:text-blue-800 font-medium px-2 py-1 bg-blue-50 hover:bg-blue-100 rounded transition-colors">📅 加到行事曆</button>
+                                                            <div className="flex gap-3">
+                                                                <button onClick={() => openEditModal(task)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">編輯</button>
+                                                                <button onClick={() => requestDelete(task)} className="text-sm text-red-500 hover:text-red-700 font-medium">刪除</button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                            {columnTasks.length === 0 && (
+                                                <div className="text-center py-6 text-sm text-gray-400 border-2 border-dashed border-gray-200 rounded-xl">
+                                                    無符合工作
                                                 </div>
-                                                <h4 className="font-bold text-gray-800 mb-2 leading-tight">{task.title}</h4>
-                                                {task.deadline && (
-                                                    <div className="flex items-center text-sm text-gray-500 mb-3 gap-2">
-                                                        <span>📅 {standardizeDate(task.deadline)}</span>
-                                                        {status !== '已完成' && overdueInfo && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${overdueInfo.color}`}>{overdueInfo.text}</span>}
-                                                    </div>
-                                                )}
-                                                {task.notes && <div className="text-sm text-gray-600 bg-gray-50 p-2 rounded mb-3 line-clamp-2">{task.notes}</div>}
-                                                <div className="flex justify-between items-center pt-2 mt-2 border-t border-gray-50">
-                                                    <button onClick={() => handleGoogleCalendarSync(task)} className="text-xs text-blue-600 hover:text-blue-800 font-medium px-2 py-1 bg-blue-50 hover:bg-blue-100 rounded transition-colors">📅 加到行事曆</button>
-                                                    <div className="flex gap-3">
-                                                        <button onClick={() => openEditModal(task)} className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">編輯</button>
-                                                        <button onClick={() => requestDelete(task)} className="text-sm text-red-500 hover:text-red-700 font-medium">刪除</button>
-                                                    </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* 行事曆視圖區域 */}
+                    {viewMode === 'calendar' && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 overflow-x-auto min-w-[800px]">
+                            <div className="flex justify-between items-center mb-6">
+                                <h2 className="text-2xl font-bold text-gray-800">
+                                    {calendarDate.getFullYear()} 年 {calendarDate.getMonth() + 1} 月
+                                </h2>
+                                <div className="flex gap-2">
+                                    <button onClick={prevMonth} className="px-4 py-2 bg-gray-100 rounded-lg hover:bg-gray-200 font-bold transition-colors">◀</button>
+                                    <button onClick={() => setCalendarDate(new Date())} className="px-4 py-2 bg-gray-100 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors">今天</button>
+                                    <button onClick={nextMonth} className="px-4 py-2 bg-gray-100 rounded-lg hover:bg-gray-200 font-bold transition-colors">▶</button>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-7 gap-px bg-gray-200 rounded-xl overflow-hidden border border-gray-200">
+                                {['日', '一', '二', '三', '四', '五', '六'].map(day => (
+                                    <div key={day} className="bg-gray-50 text-center py-3 font-bold text-gray-600 text-sm">{day}</div>
+                                ))}
+                                {(() => {
+                                    const year = calendarDate.getFullYear();
+                                    const month = calendarDate.getMonth();
+                                    const firstDay = new Date(year, month, 1).getDay();
+                                    const daysInMonth = new Date(year, month + 1, 0).getDate();
+                                    const days = [];
+                                    
+                                    for (let i = 0; i < firstDay; i++) {
+                                        days.push(<div key={`empty-${i}`} className="bg-gray-50 min-h-[140px]"></div>);
+                                    }
+                                    
+                                    for (let d = 1; d <= daysInMonth; d++) {
+                                        const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                                        const dayTasks = filteredTasks.filter(t => standardizeDate(t.deadline) === dateStr);
+                                        const isToday = standardizeDate(new Date()) === dateStr;
+                                        
+                                        days.push(
+                                            <div key={d} className={`bg-white min-h-[140px] p-2 flex flex-col group transition-colors hover:bg-gray-50 ${isToday ? 'bg-blue-50/30' : ''}`}>
+                                                <div className={`text-right text-sm font-medium mb-2 ${isToday ? 'text-blue-600 font-bold' : 'text-gray-500'}`}>
+                                                    <span className={isToday ? 'bg-blue-100 px-2 py-0.5 rounded-full' : ''}>{d}</span>
+                                                </div>
+                                                <div className="flex-1 flex flex-col gap-1.5 overflow-y-auto hide-scrollbar">
+                                                    {dayTasks.map(task => {
+                                                        const taskOverdue = checkOverdue(task.deadline);
+                                                        return (
+                                                            <div 
+                                                                key={task.id} 
+                                                                onClick={() => openEditModal(task)}
+                                                                className={`text-xs px-2 py-1.5 rounded cursor-pointer truncate font-medium shadow-sm transition-opacity hover:opacity-80 border-l-2 ${
+                                                                    task.priority === '高' ? 'bg-red-50 text-red-700 border-red-500' : 
+                                                                    task.priority === '中' ? 'bg-blue-50 text-blue-700 border-blue-500' : 
+                                                                    'bg-green-50 text-green-700 border-green-500'
+                                                                } ${task.status === '已完成' ? 'opacity-50 line-through' : ''}`}
+                                                                title={`狀態: ${task.status}\n備註: ${task.notes || '無'}`}
+                                                            >
+                                                                {task.status !== '已完成' && taskOverdue && <span className="mr-1">{taskOverdue.light}</span>}
+                                                                {task.title}
+                                                            </div>
+                                                        );
+                                                    })}
                                                 </div>
                                             </div>
                                         );
-                                    })}
-                                </div>
+                                    }
+                                    return days;
+                                })()}
                             </div>
-                        ))}
-                    </div>
+                        </div>
+                    )}
 
+                    {/* Modal 與 彈出視窗 */}
                     {isModalOpen && (
                         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
                             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
